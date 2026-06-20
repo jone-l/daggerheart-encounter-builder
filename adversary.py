@@ -384,6 +384,9 @@ class AdversaryFormPanel(QWidget):
         self._cancel_btn = QPushButton('Cancel')
         self._cancel_btn.clicked.connect(self._exit_edit_mode)
         self._cancel_btn.setVisible(False)
+        self._save_update_btn = QPushButton('Save & Update')
+        self._save_update_btn.clicked.connect(self._emit_save_and_update)
+        self._save_update_btn.setVisible(False)
         self._add_btn = QPushButton('Add to Encounter')
         self._add_btn.clicked.connect(self._emit_action)
         qty_row.addWidget(self._minus)
@@ -391,6 +394,7 @@ class AdversaryFormPanel(QWidget):
         qty_row.addWidget(self._plus)
         qty_row.addStretch()
         qty_row.addWidget(self._cancel_btn)
+        qty_row.addWidget(self._save_update_btn)
         qty_row.addWidget(self._add_btn)
         root.addLayout(qty_row)
 
@@ -501,6 +505,11 @@ class AdversaryFormPanel(QWidget):
         return self._collect() != self._loaded_clean
 
     def _update_save_button(self) -> None:
+        # In edit mode the save action lives in the bottom row — hide name row buttons
+        if self._edit_original is not None:
+            self._save_custom_btn.setVisible(False)
+            self._save_as_new_btn.setVisible(False)
+            return
         if self._loaded_adv is None or not self._is_dirty():
             self._save_custom_btn.setVisible(False)
             self._save_as_new_btn.setVisible(False)
@@ -561,11 +570,15 @@ class AdversaryFormPanel(QWidget):
         self._qty.setValue(count)
         self._add_btn.setText('Update Encounter')
         self._cancel_btn.setVisible(True)
+        is_homebrew = bool(adv.get('homebrew'))
+        self._save_update_btn.setText('Save & Update' if is_homebrew else 'Save as Custom & Update')
+        self._save_update_btn.setVisible(True)
 
     def _exit_edit_mode(self) -> None:
         self._edit_original = None
         self._add_btn.setText('Add to Encounter')
         self._cancel_btn.setVisible(False)
+        self._save_update_btn.setVisible(False)
 
     def _emit_action(self) -> None:
         if self._edit_original is not None:
@@ -573,6 +586,16 @@ class AdversaryFormPanel(QWidget):
             self._exit_edit_mode()
         else:
             self.add_to_encounter.emit(self._collect(), self._qty.value())
+
+    def _emit_save_and_update(self) -> None:
+        new = self._collect()
+        if self._loaded_adv and self._loaded_adv.get('homebrew'):
+            self.save_to_custom.emit(self._loaded_adv, new)
+        else:
+            self.save_as_new_custom.emit(new)
+        original = self._edit_original
+        self._exit_edit_mode()
+        self.update_in_encounter.emit(original, new, self._qty.value())
 
 
 # ── Adversary form dialog ─────────────────────────────────────────────────────
