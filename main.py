@@ -438,14 +438,14 @@ class MainWindow(QMainWindow):
     def _on_adversary_selected(self, adv: dict) -> None:
         tab = self._current_tab()
         if tab:
-            tab.form_panel.load(adv)
+            tab.adv_preview.load(adv)
 
     def _new_encounter(self) -> None:
         tab = EncounterTab(self._layout_mode)
         tab.title_changed.connect(lambda title, t=tab: self._update_tab_title(t, title))
         tab.title_changed.connect(lambda _: self._update_save_actions())
-        tab.form_panel.save_to_custom.connect(self._save_custom_adversary)
-        tab.form_panel.save_as_new_custom.connect(self._add_new_custom_adversary)
+        tab.form_dialog.save_to_custom.connect(self._save_custom_adversary)
+        tab.form_dialog.save_as_new_custom.connect(self._add_new_custom_adversary)
         self._tabs.addTab(tab, 'Untitled')
         self._tabs.setCurrentWidget(tab)
 
