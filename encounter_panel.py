@@ -5,7 +5,7 @@ import math
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea,
+    QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
     QVBoxLayout, QWidget,
 )
 
@@ -161,7 +161,22 @@ class EncounterPreviewPanel(QWidget):
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(4)
 
-        root.addWidget(QLabel('<b>Encounter Summary</b>'))
+        # Name + budget row (moved here from EncounterTab header)
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel('Name:'))
+        self._name_edit = QLineEdit()
+        self._name_edit.textChanged.connect(self._on_name_changed)
+        name_row.addWidget(self._name_edit, 1)
+        root.addLayout(name_row)
+
+        self._budget_btn = QPushButton('Click to configure budget')
+        self._budget_btn.setFlat(True)
+        self._budget_btn.setStyleSheet('text-align: left; padding-left: 2px;')
+        self._budget_btn.clicked.connect(self.configure_budget)
+        budget_row = QHBoxLayout()
+        budget_row.addWidget(self._budget_btn)
+        budget_row.addStretch()
+        root.addLayout(budget_row)
 
         sep1 = QFrame()
         sep1.setFrameShape(QFrame.Shape.HLine)
@@ -194,7 +209,19 @@ class EncounterPreviewPanel(QWidget):
         return self._encounter_name_str
 
     def set_encounter_name(self, name: str) -> None:
-        self._encounter_name_str = name
+        if self._encounter_name_str != name:
+            self._encounter_name_str = name
+            self._name_edit.blockSignals(True)
+            self._name_edit.setText(name)
+            self._name_edit.blockSignals(False)
+
+    def _on_name_changed(self, text: str) -> None:
+        self._encounter_name_str = text
+        if not self._loading:
+            self.encounter_changed.emit()
+
+    def set_budget_icon(self, icon) -> None:
+        self._budget_btn.setIcon(icon)
 
     def _budget_config_text(self) -> str:
         if not self._budget:
@@ -302,7 +329,9 @@ class EncounterPreviewPanel(QWidget):
         return total
 
     def _update_budget_display(self) -> None:
-        self.budget_config_changed.emit(self._budget_config_text())
+        cfg_text = self._budget_config_text()
+        self._budget_btn.setText(cfg_text)
+        self.budget_config_changed.emit(cfg_text)
         bonus = bool(self._budget and self._budget.get('adj_damage_bonus'))
         for card in self._cards:
             card.set_damage_bonus(bonus)
@@ -353,7 +382,11 @@ class EncounterPreviewPanel(QWidget):
                 self._cards_layout.removeWidget(card)
                 card.deleteLater()
             self._cards.clear()
-            self._encounter_name_str = data.get('name', '')
+            name = data.get('name', '')
+            self._encounter_name_str = name
+            self._name_edit.blockSignals(True)
+            self._name_edit.setText(name)
+            self._name_edit.blockSignals(False)
             self._budget = data.get('budget') or None
             for entry in data.get('entries', []):
                 adv = entry.get('adversary', {})

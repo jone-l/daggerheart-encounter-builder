@@ -7,22 +7,23 @@ import re
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QAction, QActionGroup, QIcon
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-    QGridLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QMenu, QMessageBox, QProgressDialog, QSpinBox,
-    QSplitter, QStyle, QTabWidget, QVBoxLayout, QWidget,
+    QGridLayout, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
+    QProgressDialog, QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget,
 )
 
+from adversary import AdversaryFormDialog
+from adversary_table import AdversaryPanel
 from encounter_tab import EncounterTab
+from icons import file_plus_icon, printer_icon, save_icon
 from print_encounter import print_encounter
 import extract
 
 
 def _resource_path(relative: str) -> Path:
-    """Resolve a bundled resource path; works both frozen (PyInstaller) and in development."""
     base = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
     return base / relative
 
@@ -30,8 +31,6 @@ def _resource_path(relative: str) -> Path:
 _FROZEN   = getattr(sys, 'frozen', False)
 _USER_DIR = Path.home() / '.daggerheart'
 
-# Adversary data lives in the user dir when frozen (no bundled data),
-# and in the project datastore when running from source.
 if _FROZEN:
     ADV_FILE = _USER_DIR / 'adversaries.json'
     ENV_FILE = _USER_DIR / 'environments.json'
@@ -67,8 +66,7 @@ def load_custom_adversaries() -> list[dict]:
 # ── PDF import worker ─────────────────────────────────────────────────────────
 
 class _ImportWorker(QThread):
-    """Runs PDF extraction off the UI thread."""
-    succeeded = Signal(list, list)  # (adversaries, environments)
+    succeeded = Signal(list, list)
     failed    = Signal(str)
 
     def __init__(self, pdf_path: str, source: dict, parent=None):
@@ -94,8 +92,6 @@ class _ImportWorker(QThread):
 # ── Source selection dialog ───────────────────────────────────────────────────
 
 class _SourceSelectDialog(QDialog):
-    """Let the user pick a known source or enter custom page ranges."""
-
     def __init__(self, sources: list[dict], pdf_name: str = '', parent=None):
         super().__init__(parent)
         self.setWindowTitle('Select Source')
@@ -118,34 +114,24 @@ class _SourceSelectDialog(QDialog):
         self._combo.currentIndexChanged.connect(self._on_selection_changed)
         root.addWidget(self._combo)
 
-        # Page range inputs — shown only when Custom is selected
         self._custom_frame = QWidget()
         grid = QGridLayout(self._custom_frame)
         grid.setContentsMargins(0, 4, 0, 0)
         grid.setSpacing(6)
 
         grid.addWidget(QLabel('Adversary pages:'), 0, 0)
-        self._adv_start = QSpinBox()
-        self._adv_start.setRange(1, 9999)
-        self._adv_start.setValue(1)
+        self._adv_start = QSpinBox(); self._adv_start.setRange(1, 9999); self._adv_start.setValue(1)
         grid.addWidget(self._adv_start, 0, 1)
         grid.addWidget(QLabel('to'), 0, 2)
-        self._adv_end = QSpinBox()
-        self._adv_end.setRange(1, 9999)
-        self._adv_end.setValue(999)
+        self._adv_end = QSpinBox(); self._adv_end.setRange(1, 9999); self._adv_end.setValue(999)
         grid.addWidget(self._adv_end, 0, 3)
 
         grid.addWidget(QLabel('Environment pages:'), 1, 0)
-        self._env_start = QSpinBox()
-        self._env_start.setRange(0, 9999)
-        self._env_start.setValue(1)
+        self._env_start = QSpinBox(); self._env_start.setRange(0, 9999); self._env_start.setValue(1)
         grid.addWidget(self._env_start, 1, 1)
         grid.addWidget(QLabel('to'), 1, 2)
-        self._env_end = QSpinBox()
-        self._env_end.setRange(0, 9999)
-        self._env_end.setValue(999)
+        self._env_end = QSpinBox(); self._env_end.setRange(0, 9999); self._env_end.setValue(999)
         grid.addWidget(self._env_end, 1, 3)
-
         grid.addWidget(QLabel('(set environment pages to 0 to skip)'), 2, 0, 1, 4)
 
         self._custom_frame.setVisible(False)
@@ -174,112 +160,6 @@ class _SourceSelectDialog(QDialog):
         }
 
 
-# ── Adversary list panel ──────────────────────────────────────────────────────
-
-class AdversaryListPanel(QWidget):
-    adversary_selected      = Signal(dict)
-    delete_custom_requested = Signal(dict)
-
-    def __init__(self, adversaries: list[dict], parent=None):
-        super().__init__(parent)
-        self._all = adversaries
-        self._enabled_tiers: set[int] = {1, 2, 3, 4}
-        self._enabled_roles: set[str] = {a['role'] for a in adversaries if a.get('role')}
-        self._enabled_sources: set[str] = {'official', 'homebrew'}
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-
-        self._search = QLineEdit()
-        self._search.setPlaceholderText('Search (regex)...')
-        self._search.textChanged.connect(self._filter)
-        layout.addWidget(self._search)
-
-        self._list = QListWidget()
-        self._list.itemClicked.connect(self._on_click)
-        self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._list.customContextMenuRequested.connect(self._on_context_menu)
-        layout.addWidget(self._list)
-
-        self._populate(adversaries)
-
-    def _populate(self, adversaries: list[dict]) -> None:
-        self._list.clear()
-        current_tier = None
-        for adv in adversaries:
-            tier = adv['tier']
-            if tier != current_tier:
-                current_tier = tier
-                header = QListWidgetItem(f'  TIER {tier}')
-                header.setFlags(Qt.ItemFlag.NoItemFlags)
-                f = header.font()
-                f.setBold(True)
-                header.setFont(f)
-                self._list.addItem(header)
-            suffix = ' (hb)' if adv.get('homebrew') else ''
-            item = QListWidgetItem(f"    {adv['name']}{suffix}")
-            item.setData(Qt.ItemDataRole.UserRole, adv)
-            self._list.addItem(item)
-
-    def _filter(self, text: str) -> None:
-        try:
-            pattern = re.compile(text, re.IGNORECASE) if text else None
-            self._search.setStyleSheet('')
-        except re.error:
-            pattern = None
-            self._search.setStyleSheet('background: #5c1a1a;')
-        filtered = [
-            a for a in self._all
-            if a.get('tier') in self._enabled_tiers
-            and a.get('role') in self._enabled_roles
-            and ('homebrew' if a.get('homebrew') else 'official') in self._enabled_sources
-            and (not pattern or pattern.search(a['name']))
-        ]
-        self._populate(filtered)
-
-    def _on_click(self, item: QListWidgetItem) -> None:
-        adv = item.data(Qt.ItemDataRole.UserRole)
-        if adv:
-            self.adversary_selected.emit(adv)
-
-    def _on_context_menu(self, pos) -> None:
-        item = self._list.itemAt(pos)
-        if not item:
-            return
-        adv = item.data(Qt.ItemDataRole.UserRole)
-        if not adv or not adv.get('homebrew'):
-            return
-        menu = QMenu(self)
-        delete_act = menu.addAction('Delete Custom Entry')
-        if menu.exec(self._list.mapToGlobal(pos)) == delete_act:
-            self.delete_custom_requested.emit(adv)
-
-    def set_tier_filter(self, tiers: set[int]) -> None:
-        self._enabled_tiers = tiers
-        self._filter(self._search.text())
-
-    def set_role_filter(self, roles: set[str]) -> None:
-        self._enabled_roles = roles
-        self._filter(self._search.text())
-
-    def set_source_filter(self, sources: set[str]) -> None:
-        self._enabled_sources = sources
-        self._filter(self._search.text())
-
-    def set_adversaries(self, adversaries: list[dict]) -> None:
-        self._all = adversaries
-        self._filter(self._search.text())
-
-
-# ── Stay-open menu ────────────────────────────────────────────────────────────
-
-class StayOpenMenu(QMenu):
-    """QMenu that stays open when clicking checkable or bulk-toggle actions."""
-    def mouseReleaseEvent(self, event):
-        action = self.activeAction()
-        if action:
-            action.trigger()
-
 # ── Main window ───────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
@@ -292,23 +172,47 @@ class MainWindow(QMainWindow):
         self._official_adversaries = load_adversaries()
         self._custom_adversaries   = load_custom_adversaries()
 
-        self._list_panel = AdversaryListPanel(self._merged_adversaries())
-        self._list_panel.adversary_selected.connect(self._on_adversary_selected)
-        self._list_panel.delete_custom_requested.connect(self._delete_custom_adversary)
-
         self._last_save_dir  = ''
         self._last_load_dir  = ''
-        self._layout_mode    = '3col'
         self._recent_files: list[str] = []
+
+        # Adversary panel (filter + table) — always visible on the left
+        self._adv_panel = AdversaryPanel(self._merged_adversaries())
+        self._adv_panel.add_requested.connect(self._on_add_to_encounter)
+        self._adv_panel.edit_requested.connect(self._on_edit_from_list)
+        self._adv_panel.filters_changed.connect(self._on_filters_changed)
+
+        # Form dialog for editing adversaries from the list
+        self._list_form_dialog = AdversaryFormDialog(self)
+        self._list_form_dialog.add_to_encounter.connect(self._on_add_to_encounter)
+        self._list_form_dialog.save_to_custom.connect(self._save_custom_adversary)
+        self._list_form_dialog.save_as_new_custom.connect(self._add_new_custom_adversary)
+
+        # Encounter tabs (right pane — hidden when no encounters open)
+        self._tabs = QTabWidget()
+        self._tabs.setTabsClosable(True)
+        self._tabs.tabCloseRequested.connect(self._close_tab)
+        self._tabs.currentChanged.connect(self._update_save_actions)
+        self._tabs.currentChanged.connect(self._update_list_encounter_state)
+
+        # Outer splitter
+        self._outer = QSplitter(Qt.Orientation.Horizontal)
+        self._outer.addWidget(self._adv_panel)
+        self._outer.addWidget(self._tabs)
+        self._outer.setCollapsible(0, False)
+        self._outer.setCollapsible(1, False)
+        self._tabs.setVisible(False)
+        self._outer.setSizes([10000, 0])
+
+        self.setCentralWidget(self._outer)
 
         # ── Menu bar ──
         file_menu = self.menuBar().addMenu('File')
-        si = self.style().standardIcon
-        new_act = QAction(si(QStyle.StandardPixmap.SP_FileIcon), 'New Encounter', self)
+        new_act = QAction(file_plus_icon(), 'New Encounter', self)
         new_act.triggered.connect(self._new_encounter)
         file_menu.addAction(new_act)
 
-        self._save_action = QAction(si(QStyle.StandardPixmap.SP_DialogSaveButton), 'Save Encounter', self)
+        self._save_action = QAction(save_icon(), 'Save Encounter', self)
         self._save_action.setShortcut('Ctrl+S')
         self._save_action.setEnabled(False)
         self._save_action.triggered.connect(self._save_encounter_quick)
@@ -322,8 +226,7 @@ class MainWindow(QMainWindow):
 
         self._print_action = QAction('Print Encounter…', self)
         self._print_action.setShortcut('Ctrl+P')
-        self._print_action.setToolTip('Print Encounter')
-        self._print_action.setIcon(QIcon.fromTheme('document-print', si(QStyle.StandardPixmap.SP_FileDialogDetailedView)))
+        self._print_action.setIcon(printer_icon())
         self._print_action.setEnabled(False)
         self._print_action.triggered.connect(self._print_encounter)
         file_menu.addAction(self._print_action)
@@ -331,9 +234,11 @@ class MainWindow(QMainWindow):
         load_act = QAction('Load Encounter…', self)
         load_act.triggered.connect(self._load_encounter_file)
         file_menu.addAction(load_act)
+
         self._recent_menu = QMenu('Open Recent', self)
         file_menu.addMenu(self._recent_menu)
         self._update_recent_menu()
+
         file_menu.addSeparator()
         import_act = QAction('Import Source…', self)
         import_act.triggered.connect(self._import_source)
@@ -343,90 +248,22 @@ class MainWindow(QMainWindow):
         exit_act.triggered.connect(self.close)
         file_menu.addAction(exit_act)
 
-        view_menu = self.menuBar().addMenu('View')
-
-        tier_sub = StayOpenMenu('Filter by Tier', self)
-        view_menu.addMenu(tier_sub)
-        for label, slot in [('Check All', lambda: self._set_all_tiers(True)),
-                             ('Uncheck All', lambda: self._set_all_tiers(False))]:
-            a = QAction(label, self); a.triggered.connect(slot); tier_sub.addAction(a)
-        tier_sub.addSeparator()
-        self._tier_actions: dict[int, QAction] = {}
-        for t in range(1, 5):
-            act = QAction(f'Tier {t}', self, checkable=True, checked=True)
-            act.triggered.connect(self._on_tier_filter_changed)
-            tier_sub.addAction(act)
-            self._tier_actions[t] = act
-
-        role_sub = StayOpenMenu('Filter by Role', self)
-        view_menu.addMenu(role_sub)
-        for label, slot in [('Check All', lambda: self._set_all_roles(True)),
-                             ('Uncheck All', lambda: self._set_all_roles(False))]:
-            a = QAction(label, self); a.triggered.connect(slot); role_sub.addAction(a)
-        role_sub.addSeparator()
-        self._role_actions: dict[str, QAction] = {}
-        for role in sorted({a['role'] for a in self._merged_adversaries() if a.get('role')}):
-            act = QAction(role, self, checkable=True, checked=True)
-            act.triggered.connect(self._on_role_filter_changed)
-            role_sub.addAction(act)
-            self._role_actions[role] = act
-
-        source_sub = StayOpenMenu('Filter by Source', self)
-        view_menu.addMenu(source_sub)
-        for label, slot in [('Check All', lambda: self._set_all_sources(True)),
-                             ('Uncheck All', lambda: self._set_all_sources(False))]:
-            a = QAction(label, self); a.triggered.connect(slot); source_sub.addAction(a)
-        source_sub.addSeparator()
-        self._source_actions: dict[str, QAction] = {}
-        for source, label in [('official', 'Official'), ('homebrew', 'Homebrew')]:
-            act = QAction(label, self, checkable=True, checked=True)
-            act.triggered.connect(self._on_source_filter_changed)
-            source_sub.addAction(act)
-            self._source_actions[source] = act
-
-        view_menu.addSeparator()
-        layout_group = QActionGroup(self)
-        layout_group.setExclusive(True)
-        self._layout_3col_act = QAction('Side by side', self, checkable=True, checked=True)
-        self._layout_3col_act.triggered.connect(lambda: self._set_layout('3col'))
-        layout_group.addAction(self._layout_3col_act)
-        view_menu.addAction(self._layout_3col_act)
-        self._layout_2col_act = QAction('Stacked', self, checkable=True)
-        self._layout_2col_act.triggered.connect(lambda: self._set_layout('2col'))
-        layout_group.addAction(self._layout_2col_act)
-        view_menu.addAction(self._layout_2col_act)
-
-        # ── Toolbar: file actions ──
+        # ── Toolbar ──
         file_tb = self.addToolBar('File')
         file_tb.setMovable(False)
         file_tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         file_tb.addAction(new_act)
         file_tb.addAction(self._save_action)
         file_tb.addAction(self._print_action)
-        print_btn = file_tb.widgetForAction(self._print_action)
-        if print_btn and hasattr(print_btn, 'setToolButtonStyle'):
-            print_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
 
-        # ── Outer splitter: list | tabs ──
-        self._outer = QSplitter(Qt.Orientation.Horizontal)
-        self._list_panel.setMinimumWidth(180)
-        self._outer.addWidget(self._list_panel)
-
-        self._tabs = QTabWidget()
-        self._tabs.setTabsClosable(True)
-        self._tabs.tabCloseRequested.connect(self._close_tab)
-        self._tabs.currentChanged.connect(self._update_save_actions)
-        self._outer.addWidget(self._tabs)
-
-        self._outer.setSizes([250, 1150])
-        self.setCentralWidget(self._outer)
-
+        # ── Status bar ──
         self._status_label = QLabel()
         self.statusBar().addWidget(self._status_label, 1)
-        self._update_status()
+        self._update_status(set(), set(), set())
         self._load_state()
 
         if not self._official_adversaries:
+            from PySide6.QtCore import QTimer
             QTimer.singleShot(0, self._prompt_import_if_empty)
 
     # ── Tab management ────────────────────────────────────────────────────────
@@ -435,19 +272,15 @@ class MainWindow(QMainWindow):
         w = self._tabs.currentWidget()
         return w if isinstance(w, EncounterTab) else None
 
-    def _on_adversary_selected(self, adv: dict) -> None:
-        tab = self._current_tab()
-        if tab:
-            tab.adv_preview.load(adv)
-
     def _new_encounter(self) -> None:
-        tab = EncounterTab(self._layout_mode)
+        tab = EncounterTab()
         tab.title_changed.connect(lambda title, t=tab: self._update_tab_title(t, title))
         tab.title_changed.connect(lambda _: self._update_save_actions())
-        tab.form_dialog.save_to_custom.connect(self._save_custom_adversary)
-        tab.form_dialog.save_as_new_custom.connect(self._add_new_custom_adversary)
+        tab.save_to_custom.connect(self._save_custom_adversary)
+        tab.save_as_new_custom.connect(self._add_new_custom_adversary)
         self._tabs.addTab(tab, 'Untitled')
         self._tabs.setCurrentWidget(tab)
+        self._show_right_pane(True)
 
     def _close_tab(self, idx: int) -> None:
         w = self._tabs.widget(idx)
@@ -474,71 +307,77 @@ class MainWindow(QMainWindow):
                     return
         self._tabs.removeTab(idx)
         w.deleteLater()
+        if self._tabs.count() == 0:
+            self._show_right_pane(False)
+
+    def _show_right_pane(self, visible: bool) -> None:
+        self._tabs.setVisible(visible)
+        if visible:
+            w = self._outer.width()
+            self._outer.setSizes([w * 6 // 10, w * 4 // 10])
+        else:
+            self._outer.setSizes([10000, 0])
+        self._adv_panel.set_encounter_open(visible)
+        self._update_list_form_dialog_mode()
+
+    def _update_list_encounter_state(self) -> None:
+        self._update_list_form_dialog_mode()
+
+    def _update_list_form_dialog_mode(self) -> None:
+        has_encounter = self._tabs.count() > 0
+        # Show/hide add buttons in any open list form dialog
+        panel = self._list_form_dialog.form_panel
+        panel._add_btn.setVisible(has_encounter)
 
     def _update_tab_title(self, tab: EncounterTab, title: str) -> None:
         idx = self._tabs.indexOf(tab)
         if idx >= 0:
             self._tabs.setTabText(idx, title)
 
-    # ── Filters ───────────────────────────────────────────────────────────────
+    # ── Adversary panel callbacks ─────────────────────────────────────────────
 
-    def _on_tier_filter_changed(self) -> None:
-        enabled = {t for t, act in self._tier_actions.items() if act.isChecked()}
-        self._list_panel.set_tier_filter(enabled)
-        self._update_status()
+    def _on_add_to_encounter(self, adv: dict, count: int) -> None:
+        tab = self._current_tab()
+        if tab:
+            tab.preview_panel.add_entry(adv, count)
+
+    def _on_edit_from_list(self, adv: dict) -> None:
+        self._list_form_dialog.load(adv)
+        self._update_list_form_dialog_mode()
+        self._list_form_dialog.exec()
+
+    def _on_filters_changed(self, tiers: set, roles: set, sources: set) -> None:
+        self._update_status(tiers, roles, sources)
         self._save_state()
 
-    def _on_role_filter_changed(self) -> None:
-        enabled = {r for r, act in self._role_actions.items() if act.isChecked()}
-        self._list_panel.set_role_filter(enabled)
-        self._update_status()
-        self._save_state()
+    # ── Status bar ────────────────────────────────────────────────────────────
 
-    def _update_status(self) -> None:
+    def _update_status(self, tiers: set[int], roles: set[str], sources: set[str]) -> None:
+        from adversary_table import _ALL_ROLES, _ALL_TIERS, _ALL_SOURCES
+        all_tiers   = set(_ALL_TIERS)
+        all_roles   = set(_ALL_ROLES)
+        all_sources = {v for v, _ in _ALL_SOURCES}
         parts = []
-        active_tiers = {t for t, act in self._tier_actions.items() if act.isChecked()}
-        if active_tiers != set(self._tier_actions):
-            parts.append(', '.join(f'Tier {t}' for t in sorted(active_tiers)) or 'no tiers')
-        active_roles = {r for r, act in self._role_actions.items() if act.isChecked()}
-        if active_roles != set(self._role_actions):
-            parts.append(', '.join(sorted(active_roles)) or 'no roles')
-        active_sources = {s for s, act in self._source_actions.items() if act.isChecked()}
-        if active_sources != set(self._source_actions):
+        if tiers != all_tiers and tiers:
+            parts.append(', '.join(f'Tier {t}' for t in sorted(tiers)) or 'no tiers')
+        if roles != all_roles and roles:
+            parts.append(', '.join(sorted(roles)) or 'no roles')
+        if sources != all_sources and sources:
             labels = {'official': 'Official', 'homebrew': 'Homebrew'}
-            parts.append(', '.join(labels[s] for s in sorted(active_sources)) or 'no sources')
+            parts.append(', '.join(labels[s] for s in sorted(sources)) or 'no sources')
         self._status_label.setText('Filters: ' + ('  ·  '.join(parts) if parts else 'none'))
-
-    def _set_all_tiers(self, checked: bool) -> None:
-        for act in self._tier_actions.values():
-            act.setChecked(checked)
-        self._on_tier_filter_changed()
-
-    def _set_all_roles(self, checked: bool) -> None:
-        for act in self._role_actions.values():
-            act.setChecked(checked)
-        self._on_role_filter_changed()
-
-    def _on_source_filter_changed(self) -> None:
-        enabled = {s for s, act in self._source_actions.items() if act.isChecked()}
-        self._list_panel.set_source_filter(enabled)
-        self._update_status()
-        self._save_state()
-
-    def _set_all_sources(self, checked: bool) -> None:
-        for act in self._source_actions.values():
-            act.setChecked(checked)
-        self._on_source_filter_changed()
 
     # ── State persistence ─────────────────────────────────────────────────────
 
     def _save_state(self) -> None:
         if getattr(self, '_loading_state', False):
             return
+        tiers, roles, sources = self._adv_panel.filter_panel.get_filters()
         state = {
             'filters': {
-                'tiers':   sorted(t for t, act in self._tier_actions.items() if act.isChecked()),
-                'roles':   sorted(r for r, act in self._role_actions.items() if act.isChecked()),
-                'sources': sorted(s for s, act in self._source_actions.items() if act.isChecked()),
+                'tiers':   sorted(tiers),
+                'roles':   sorted(roles),
+                'sources': sorted(sources),
             },
             'last_save_dir': self._last_save_dir,
             'last_load_dir': self._last_load_dir,
@@ -561,21 +400,13 @@ class MainWindow(QMainWindow):
         self._loading_state = True
         try:
             filters = state.get('filters', {})
-            tiers = set(filters.get('tiers', list(self._tier_actions)))
-            for t, act in self._tier_actions.items():
-                act.setChecked(t in tiers)
-            self._on_tier_filter_changed()
-            roles = set(filters.get('roles', list(self._role_actions)))
-            for r, act in self._role_actions.items():
-                act.setChecked(r in roles)
-            self._on_role_filter_changed()
-            sources = set(filters.get('sources', list(self._source_actions)))
-            for s, act in self._source_actions.items():
-                act.setChecked(s in sources)
-            self._on_source_filter_changed()
+            tiers   = set(filters.get('tiers',   [1, 2, 3, 4]))
+            roles   = set(filters.get('roles',   list(__import__('adversary_table')._ALL_ROLES)))
+            sources = set(filters.get('sources', ['official', 'homebrew']))
+            self._adv_panel.filter_panel.restore(tiers, roles, sources)
             self._last_save_dir = state.get('last_save_dir', '')
             self._last_load_dir = state.get('last_load_dir', '')
-            self._recent_files = [p for p in state.get('recent_files', []) if isinstance(p, str)]
+            self._recent_files  = [p for p in state.get('recent_files', []) if isinstance(p, str)]
             self._update_recent_menu()
             win = state.get('window', {})
             if win.get('width') and win.get('height'):
@@ -649,19 +480,16 @@ class MainWindow(QMainWindow):
             self, 'Select Daggerheart PDF', '', 'PDF Files (*.pdf)')
         if not pdf_path:
             return
-
         try:
             manifest = json.loads(_resource_path('sources.json').read_text(encoding='utf-8'))
             sources = manifest.get('sources', [])
         except Exception as e:
             QMessageBox.critical(self, 'Error', f'Cannot read sources.json:\n{e}')
             return
-
         pdf_name = Path(pdf_path).name
         matched  = next(
             (s for s in sources if s.get('filename', '').lower() == pdf_name.lower()), None
         )
-
         if matched is not None:
             label = matched.get('label', matched['filename'])
             reply = QMessageBox.question(
@@ -714,8 +542,7 @@ class MainWindow(QMainWindow):
 
     def _reload_adversaries(self) -> None:
         self._official_adversaries = load_adversaries()
-        self._list_panel.set_adversaries(self._merged_adversaries())
-        self._update_status()
+        self._adv_panel.set_adversaries(self._merged_adversaries())
 
     # ── Custom adversaries ────────────────────────────────────────────────────
 
@@ -729,36 +556,16 @@ class MainWindow(QMainWindow):
         entry = {k: v for k, v in new.items() if k != 'homebrew'}
         entry['homebrew'] = True
         if original.get('homebrew'):
-            # Overwrite by original name so renames work correctly
             self._custom_adversaries = [
                 a for a in self._custom_adversaries if a.get('name') != original.get('name')
             ]
         else:
-            # Official source → remove any custom entry with the same new name
             self._custom_adversaries = [
                 a for a in self._custom_adversaries if a.get('name') != entry.get('name')
             ]
         self._custom_adversaries.append(entry)
         self._save_custom_file()
-        self._refresh_adversary_list()
-
-    def _delete_custom_adversary(self, adv: dict) -> None:
-        self._custom_adversaries = [
-            a for a in self._custom_adversaries if a.get('name') != adv.get('name')
-        ]
-        self._save_custom_file()
-        self._refresh_adversary_list()
-
-    def _save_custom_file(self) -> None:
-        entries = [{k: v for k, v in a.items() if k != 'homebrew'} for a in self._custom_adversaries]
-        try:
-            CUSTOM_FILE.parent.mkdir(parents=True, exist_ok=True)
-            CUSTOM_FILE.write_text(json.dumps({'adversaries': entries}, indent=2), encoding='utf-8')
-        except OSError:
-            pass
-
-    def _refresh_adversary_list(self) -> None:
-        self._list_panel.set_adversaries(self._merged_adversaries())
+        self._adv_panel.set_adversaries(self._merged_adversaries())
 
     def _add_new_custom_adversary(self, new: dict) -> None:
         entry = {k: v for k, v in new.items() if k != 'homebrew'}
@@ -768,7 +575,15 @@ class MainWindow(QMainWindow):
         ]
         self._custom_adversaries.append(entry)
         self._save_custom_file()
-        self._refresh_adversary_list()
+        self._adv_panel.set_adversaries(self._merged_adversaries())
+
+    def _save_custom_file(self) -> None:
+        entries = [{k: v for k, v in a.items() if k != 'homebrew'} for a in self._custom_adversaries]
+        try:
+            CUSTOM_FILE.parent.mkdir(parents=True, exist_ok=True)
+            CUSTOM_FILE.write_text(json.dumps({'adversaries': entries}, indent=2), encoding='utf-8')
+        except OSError:
+            pass
 
     # ── File I/O ──────────────────────────────────────────────────────────────
 
@@ -789,12 +604,12 @@ class MainWindow(QMainWindow):
         if not tab:
             return
         data = tab.get_encounter_state()
-        raw = data.get('name', '')
+        raw  = data.get('name', '')
         safe = re.sub(r'[^\w\s-]', '', raw.lower())
         safe = re.sub(r'\s+', '_', safe.strip())
         filename = (safe or 'encounter') + '.json'
-        initial = str(Path(self._last_save_dir) / filename) if self._last_save_dir else filename
-        path, _ = QFileDialog.getSaveFileName(
+        initial  = str(Path(self._last_save_dir) / filename) if self._last_save_dir else filename
+        path, _  = QFileDialog.getSaveFileName(
             self, 'Save Encounter', initial, 'JSON files (*.json)'
         )
         if path:
@@ -830,18 +645,7 @@ class MainWindow(QMainWindow):
             except (OSError, json.JSONDecodeError):
                 pass
 
-    # ── Layout ────────────────────────────────────────────────────────────────
-
-    def _set_layout(self, mode: str) -> None:
-        self._layout_mode = mode
-        orientation = Qt.Orientation.Horizontal if mode == '3col' else Qt.Orientation.Vertical
-        for i in range(self._tabs.count()):
-            tab = self._tabs.widget(i)
-            if isinstance(tab, EncounterTab):
-                tab.set_orientation(orientation)
-        self._layout_3col_act.setChecked(mode == '3col')
-        self._layout_2col_act.setChecked(mode == '2col')
-
+    # ── Close ─────────────────────────────────────────────────────────────────
 
     def closeEvent(self, event) -> None:
         self._save_state()
