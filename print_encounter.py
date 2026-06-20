@@ -30,9 +30,10 @@ def _px(mm: float, dpi: int) -> float:
 class _Renderer:
 
     def __init__(self, state: dict, printer: QPrinter):
-        self._state = state
-        self._pr    = printer
-        self._dpi   = printer.resolution()
+        self._state        = state
+        self._pr           = printer
+        self._dpi          = printer.resolution()
+        self._damage_bonus = bool(state.get('budget', {}).get('adj_damage_bonus', False))
 
         def p(mm): return _px(mm, self._dpi)
 
@@ -255,6 +256,8 @@ class _Renderer:
         weapon = (adv.get('weapon') or '').strip()
         rng    = (adv.get('range') or '').strip()
         dmg    = (adv.get('damage') or '').strip()
+        if self._damage_bonus and dmg:
+            dmg = f'{dmg}+1d4'
         dmg_t  = (adv.get('damage_type') or '').strip()
         wpn_str = ''
         if weapon:

@@ -3,7 +3,9 @@
 
 import math
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QByteArray, QTimer, Signal
+from PySide6.QtGui import QIcon, QPainter, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QSplitter,
@@ -37,6 +39,36 @@ _ADJ_DELTAS: dict[str, int] = {
     'adj_more_dangerous': +2,
 }
 
+_ADJ_SHORT: dict[str, str] = {
+    'adj_less_difficult': 'less difficult',
+    'adj_two_plus_solos': '2+ solos',
+    'adj_damage_bonus':   '+1d4 dmg',
+    'adj_lower_tier':     'lower tier',
+    'adj_no_heavy_roles': 'no heavy roles',
+    'adj_more_dangerous': 'more dangerous',
+}
+
+_PENCIL_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
+    b'<path fill="#cccccc" d="M12.854.146a.5.5 0 0 0-.707 0L10.5 1.793 14.207 5.5'
+    b' l1.647-1.646a.5.5 0 0 0 0-.708zm.646 6.061L9.793 2.5 3.293 9H3.5a.5.5 0 0 1'
+    b' .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.207'
+    b'l6.5-6.5zm-7.468 7.468A.5.5 0 0 1 6 13.5V13h-.5a.5.5 0 0 1-.5-.5V12h-.5a.5.5'
+    b' 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.5-.5V10h-.5a.499.499 0 0 1-.175-.032l-.179.178'
+    b'a.5.5 0 0 0-.11.168l-2 5a.5.5 0 0 0 .65.65l5-2a.5.5 0 0 0 .168-.11l.178-.178z"/>'
+    b'</svg>'
+)
+
+
+def _pencil_icon(size: int = 14) -> QIcon:
+    renderer = QSvgRenderer(QByteArray(_PENCIL_SVG))
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pm)
+
 
 # ── Budget dialog ─────────────────────────────────────────────────────────────
 
@@ -52,6 +84,8 @@ class BudgetDialog(QDialog):
         ('adj_more_dangerous', '+2   More dangerous or longer'),
     ]
 
+    _AUTO_KEYS = frozenset({'adj_two_plus_solos', 'adj_lower_tier', 'adj_no_heavy_roles'})
+
     def __init__(self, settings: dict | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Configure Battle Budget')
@@ -61,6 +95,12 @@ class BudgetDialog(QDialog):
 
         root = QVBoxLayout(self)
         root.setSpacing(8)
+
+        # ── Dynamic budget ──
+        self._dynamic = QCheckBox('Dynamic budget (auto-applies party composition adjustments)')
+        default_dynamic = True if settings is None else settings.get('dynamic', False)
+        self._dynamic.setChecked(default_dynamic)
+        root.addWidget(self._dynamic)
 
         # ── PC count ──
         pc_row = QHBoxLayout()
@@ -89,7 +129,12 @@ class BudgetDialog(QDialog):
         for key, label in self._ADJUSTMENTS:
             cb = QCheckBox(label)
             cb.setChecked(s.get(key, False))
-            cb.stateChanged.connect(self._refresh)
+            if key == 'adj_less_difficult':
+                cb.stateChanged.connect(self._on_less_difficult)
+            elif key == 'adj_more_dangerous':
+                cb.stateChanged.connect(self._on_more_dangerous)
+            else:
+                cb.stateChanged.connect(self._refresh)
             root.addWidget(cb)
             self._checks[key] = cb
 
@@ -97,7 +142,9 @@ class BudgetDialog(QDialog):
         self._preview_lbl = QLabel()
         self._preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root.addWidget(self._preview_lbl)
-        self._refresh()
+
+        self._dynamic.stateChanged.connect(self._on_dynamic_changed)
+        self._on_dynamic_changed()  # sets enabled state and calls _refresh()
 
         # ── Buttons ──
         btn_row = QHBoxLayout()
@@ -113,6 +160,26 @@ class BudgetDialog(QDialog):
         btn_row.addWidget(cancel_btn)
         btn_row.addWidget(ok_btn)
         root.addLayout(btn_row)
+
+    def _on_dynamic_changed(self) -> None:
+        is_dynamic = self._dynamic.isChecked()
+        for key in self._AUTO_KEYS:
+            self._checks[key].setEnabled(not is_dynamic)
+        self._refresh()
+
+    def _on_less_difficult(self, state: int) -> None:
+        if state:
+            self._checks['adj_more_dangerous'].blockSignals(True)
+            self._checks['adj_more_dangerous'].setChecked(False)
+            self._checks['adj_more_dangerous'].blockSignals(False)
+        self._refresh()
+
+    def _on_more_dangerous(self, state: int) -> None:
+        if state:
+            self._checks['adj_less_difficult'].blockSignals(True)
+            self._checks['adj_less_difficult'].setChecked(False)
+            self._checks['adj_less_difficult'].blockSignals(False)
+        self._refresh()
 
     def _calc(self) -> tuple[int, int]:
         n = self._num_pcs.value()
@@ -141,6 +208,7 @@ class BudgetDialog(QDialog):
         return {
             'num_pcs':    self._num_pcs.value(),
             'party_tier': self._party_tier.value(),
+            'dynamic':    self._dynamic.isChecked(),
             **{key: self._checks[key].isChecked() for key, _ in self._ADJUSTMENTS},
         }
 
@@ -446,6 +514,7 @@ class EncounterCard(QFrame):
         super().__init__(parent)
         self.adv = adv
         self._rows: list[QWidget] = []
+        self._damage_bonus = False
 
         self.setFrameShape(QFrame.Shape.Box)
         self.setLineWidth(1)
@@ -499,11 +568,19 @@ class EncounterCard(QFrame):
             f"Stress: {adv.get('stress', '?')}  ·  "
             f"Thresholds: {adv.get('thresholds', '?')}"
         )
+        dmg = adv.get('damage', '?') or '?'
+        if self._damage_bonus and dmg and dmg != '?':
+            dmg = f'{dmg}+1d4'
         self._stats2_lbl.setText(
             f"ATK: {adv.get('atk', '?')}  ·  "
             f"{adv.get('weapon', '?')}: {adv.get('range', '?')}  ·  "
-            f"{adv.get('damage', '?')} {adv.get('damage_type', '')}"
+            f"{dmg} {adv.get('damage_type', '')}"
         )
+
+    def set_damage_bonus(self, enabled: bool) -> None:
+        if self._damage_bonus != enabled:
+            self._damage_bonus = enabled
+            self._refresh_labels()
 
     def update(self, adv: dict, new_count: int) -> None:
         self.adv = adv
@@ -557,39 +634,40 @@ class EncounterCard(QFrame):
 # ── Encounter preview panel ───────────────────────────────────────────────────
 
 class EncounterPreviewPanel(QWidget):
-    edit_requested    = Signal(dict, int)
-    encounter_changed = Signal()
+    edit_requested        = Signal(dict, int)
+    encounter_changed     = Signal()
+    name_loaded           = Signal(str)
+    budget_config_changed = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._cards: list[EncounterCard] = []
         self._loading = False
         self._budget: dict | None = None
+        self._encounter_name_str = ''
 
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
+        root.setSpacing(4)
 
-        hdr = QHBoxLayout()
-        hdr.addWidget(QLabel('<b>Encounter</b>'))
-        hdr.addStretch()
+        root.addWidget(QLabel('<b>Encounter Summary</b>'))
+
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.Shape.HLine)
+        sep1.setFrameShadow(QFrame.Shadow.Sunken)
+        root.addWidget(sep1)
+
+        self._budget_result_lbl = QLabel()
+        self._budget_result_lbl.setVisible(False)
+        root.addWidget(self._budget_result_lbl)
+
         self._count_lbl = QLabel('0 adversaries')
-        hdr.addWidget(self._count_lbl)
-        budget_btn = QPushButton('⚙ Budget')
-        budget_btn.setFixedHeight(22)
-        budget_btn.clicked.connect(self._configure_budget)
-        hdr.addWidget(budget_btn)
-        root.addLayout(hdr)
+        root.addWidget(self._count_lbl)
 
-        name_row = QHBoxLayout()
-        name_row.addWidget(QLabel('Name:'))
-        self._encounter_name = QLineEdit()
-        self._encounter_name.textChanged.connect(self._emit_changed)
-        name_row.addWidget(self._encounter_name, stretch=1)
-        root.addLayout(name_row)
-
-        self._budget_lbl = QLabel()
-        self._budget_lbl.setVisible(False)
-        root.addWidget(self._budget_lbl)
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setFrameShadow(QFrame.Shadow.Sunken)
+        root.addWidget(sep2)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -602,14 +680,32 @@ class EncounterPreviewPanel(QWidget):
 
     @property
     def encounter_name(self) -> str:
-        return self._encounter_name.text()
+        return self._encounter_name_str
 
     def set_encounter_name(self, name: str) -> None:
-        self._encounter_name.setText(name)
+        self._encounter_name_str = name
 
-    def _emit_changed(self) -> None:
-        if not self._loading:
-            self.encounter_changed.emit()
+    def _budget_config_text(self) -> str:
+        if not self._budget:
+            return 'Click to configure budget'
+        parts = [f"{self._budget.get('num_pcs', 4)} PCs",
+                 f"Tier {self._budget.get('party_tier', 1)}"]
+        for key, label in _ADJ_SHORT.items():
+            if self._budget.get(key):
+                parts.append(label)
+        return '  ·  '.join(parts)
+
+    def _auto_adjust_budget(self) -> None:
+        if not self._budget or not self._budget.get('dynamic', False):
+            return
+        party_tier  = self._budget.get('party_tier', 1)
+        heavy_roles = {'Bruiser', 'Horde', 'Leader', 'Solo'}
+        solo_count  = sum(c.count for c in self._cards if c.adv.get('role') == 'Solo')
+        has_heavy   = any(c.adv.get('role') in heavy_roles for c in self._cards)
+        has_lower   = any(c.adv.get('tier', party_tier) < party_tier for c in self._cards)
+        self._budget['adj_two_plus_solos'] = solo_count >= 2
+        self._budget['adj_no_heavy_roles'] = bool(self._cards) and not has_heavy
+        self._budget['adj_lower_tier']     = has_lower
 
     def add_entry(self, adv: dict, count: int) -> None:
         name = adv.get('name', '')
@@ -619,6 +715,7 @@ class EncounterPreviewPanel(QWidget):
                 self._update_count()
                 return
         card = EncounterCard(adv, count)
+        card.set_damage_bonus(bool(self._budget and self._budget.get('adj_damage_bonus')))
         card.delete_all_requested.connect(self._on_delete_all)
         card.delete_one_requested.connect(self._on_delete_one)
         card.edit_requested.connect(self.edit_requested)
@@ -640,19 +737,35 @@ class EncounterPreviewPanel(QWidget):
             self._update_count()
 
     def _update_count(self) -> None:
+        self._auto_adjust_budget()
         total = sum(c.count for c in self._cards)
-        self._count_lbl.setText(f'{total} adversar{"y" if total == 1 else "ies"}')
+        role_counts: dict[str, int] = {}
+        for card in self._cards:
+            role = card.adv.get('role', '')
+            if role:
+                role_counts[role] = role_counts.get(role, 0) + card.count
+        base = f'{total} adversar{"y" if total == 1 else "ies"}'
+        if role_counts:
+            parts = ', '.join(
+                f'{n} {r}' for r, n in sorted(role_counts.items(), key=lambda x: -x[1])
+            )
+            self._count_lbl.setText(f'{base}  ({parts})')
+        else:
+            self._count_lbl.setText(base)
         self._update_budget_display()
-        self._emit_changed()
+        if not self._loading:
+            self.encounter_changed.emit()
 
     # ── Budget ────────────────────────────────────────────────────────────────
 
-    def _configure_budget(self) -> None:
+    def configure_budget(self) -> None:
         dlg = BudgetDialog(self._budget, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._budget = dlg.get_settings()
+            self._auto_adjust_budget()
             self._update_budget_display()
-            self._emit_changed()
+            if not self._loading:
+                self.encounter_changed.emit()
 
     def _budget_total(self) -> int:
         if not self._budget:
@@ -678,8 +791,12 @@ class EncounterPreviewPanel(QWidget):
         return total
 
     def _update_budget_display(self) -> None:
+        self.budget_config_changed.emit(self._budget_config_text())
+        bonus = bool(self._budget and self._budget.get('adj_damage_bonus'))
+        for card in self._cards:
+            card.set_damage_bonus(bonus)
         if not self._budget:
-            self._budget_lbl.setVisible(False)
+            self._budget_result_lbl.setVisible(False)
             return
         budget    = self._budget_total()
         spent     = self._budget_spent()
@@ -690,10 +807,10 @@ class EncounterPreviewPanel(QWidget):
             rem_html = '<span style="color: #4a9e4a; font-weight: bold;">On budget</span>'
         else:
             rem_html = f'<span style="color: #c0392b; font-weight: bold;">{-remaining} over budget</span>'
-        self._budget_lbl.setText(
+        self._budget_result_lbl.setText(
             f'Budget {budget} pts  ·  Spent {spent} pts  ·  {rem_html}'
         )
-        self._budget_lbl.setVisible(True)
+        self._budget_result_lbl.setVisible(True)
 
     def update_entry(self, original_adv: dict, new_adv: dict, new_count: int) -> None:
         original_name = original_adv.get('name', '')
@@ -708,7 +825,7 @@ class EncounterPreviewPanel(QWidget):
 
     def get_encounter_state(self) -> dict:
         state = {
-            'name': self._encounter_name.text(),
+            'name': self._encounter_name_str,
             'entries': [
                 {'adversary': card.adv, 'count': card.count}
                 for card in self._cards
@@ -725,7 +842,7 @@ class EncounterPreviewPanel(QWidget):
                 self._cards_layout.removeWidget(card)
                 card.deleteLater()
             self._cards.clear()
-            self._encounter_name.setText(data.get('name', ''))
+            self._encounter_name_str = data.get('name', '')
             self._budget = data.get('budget') or None
             for entry in data.get('entries', []):
                 adv = entry.get('adversary', {})
@@ -735,6 +852,7 @@ class EncounterPreviewPanel(QWidget):
             self._update_count()
         finally:
             self._loading = False
+        self.name_loaded.emit(self._encounter_name_str)
 
 
 # ── Encounter tab ─────────────────────────────────────────────────────────────
@@ -747,12 +865,36 @@ class EncounterTab(QWidget):
         super().__init__(parent)
         self._dirty = False
         self._saving = False
+        self._loading = False
         self._save_path = ''
         self._initial_split_done = False
 
         self._form_panel    = AdversaryFormPanel()
         self._preview_panel = EncounterPreviewPanel()
 
+        # ── Encounter header (spans full width above both panels) ──
+        header = QWidget()
+        hdr = QGridLayout(header)
+        hdr.setContentsMargins(4, 4, 4, 2)
+        hdr.setSpacing(4)
+        hdr.setColumnStretch(1, 1)
+
+        hdr.addWidget(QLabel('Name:'), 0, 0)
+        self._encounter_name = QLineEdit()
+        hdr.addWidget(self._encounter_name, 0, 1)
+
+        self._budget_btn = QPushButton('Click to configure budget')
+        self._budget_btn.setFlat(True)
+        self._budget_btn.setStyleSheet('text-align: left; padding-left: 2px;')
+        self._budget_btn.setIcon(_pencil_icon())
+        self._budget_btn.clicked.connect(self._preview_panel.configure_budget)
+        budget_row = QHBoxLayout()
+        budget_row.setContentsMargins(0, 0, 0, 0)
+        budget_row.addWidget(self._budget_btn)
+        budget_row.addStretch()
+        hdr.addLayout(budget_row, 1, 1)
+
+        # ── Splitter: adversary form | encounter cards ──
         self._splitter = QSplitter(
             Qt.Orientation.Horizontal if layout_mode == '3col' else Qt.Orientation.Vertical
         )
@@ -761,12 +903,17 @@ class EncounterTab(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._splitter)
+        layout.setSpacing(0)
+        layout.addWidget(header)
+        layout.addWidget(self._splitter, 1)
 
         self._form_panel.add_to_encounter.connect(self._preview_panel.add_entry)
         self._form_panel.update_in_encounter.connect(self._preview_panel.update_entry)
         self._preview_panel.edit_requested.connect(self._form_panel.load_for_edit)
         self._preview_panel.encounter_changed.connect(self._on_changed)
+        self._encounter_name.textChanged.connect(self._on_name_changed)
+        self._preview_panel.name_loaded.connect(self._encounter_name.setText)
+        self._preview_panel.budget_config_changed.connect(self._budget_btn.setText)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -799,9 +946,23 @@ class EncounterTab(QWidget):
         return self._preview_panel
 
     def _on_changed(self) -> None:
-        if not self._saving:
+        if not self._saving and not self._loading:
             self._dirty = True
         self.title_changed.emit(self._tab_title())
+
+    def _on_name_changed(self, name: str) -> None:
+        self._preview_panel.set_encounter_name(name)
+        self._on_changed()
+
+    def load_encounter_state(self, data: dict) -> None:
+        self._loading = True
+        try:
+            self._preview_panel.load_encounter_state(data)
+        finally:
+            self._loading = False
+
+    def get_encounter_state(self) -> dict:
+        return self._preview_panel.get_encounter_state()
 
     def _tab_title(self) -> str:
         name = self._preview_panel.encounter_name
@@ -814,7 +975,7 @@ class EncounterTab(QWidget):
         try:
             self._save_path = path
             if name:
-                self._preview_panel.set_encounter_name(name)
+                self._encounter_name.setText(name)
             self._dirty = False
         finally:
             self._saving = False

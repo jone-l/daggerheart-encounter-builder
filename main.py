@@ -621,7 +621,7 @@ class MainWindow(QMainWindow):
             return
         self._new_encounter()
         tab = self._current_tab()
-        tab.preview_panel.load_encounter_state(data)
+        tab.load_encounter_state(data)
         tab.mark_saved(path)
         self._last_load_dir = str(p.parent)
         self._add_recent(path)
@@ -776,7 +776,7 @@ class MainWindow(QMainWindow):
         tab = self._current_tab()
         if not tab or not tab.save_path:
             return
-        data = tab.preview_panel.get_encounter_state()
+        data = tab.get_encounter_state()
         try:
             Path(tab.save_path).write_text(json.dumps(data, indent=2), encoding='utf-8')
             tab.mark_saved(tab.save_path)
@@ -788,7 +788,7 @@ class MainWindow(QMainWindow):
         tab = self._current_tab()
         if not tab:
             return
-        data = tab.preview_panel.get_encounter_state()
+        data = tab.get_encounter_state()
         raw = data.get('name', '')
         safe = re.sub(r'[^\w\s-]', '', raw.lower())
         safe = re.sub(r'\s+', '_', safe.strip())
@@ -811,7 +811,7 @@ class MainWindow(QMainWindow):
         tab = self._current_tab()
         if not tab:
             return
-        print_encounter(tab.preview_panel.get_encounter_state(), self)
+        print_encounter(tab.get_encounter_state(), self)
 
     def _load_encounter_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -823,7 +823,7 @@ class MainWindow(QMainWindow):
                 self._last_load_dir = str(Path(path).parent)
                 self._new_encounter()
                 tab = self._current_tab()
-                tab.preview_panel.load_encounter_state(data)
+                tab.load_encounter_state(data)
                 tab.mark_saved(path)
                 self._add_recent(path)
                 self._save_state()
