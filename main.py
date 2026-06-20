@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QSplitter, QStyle, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from adversary_encounter import EncounterTab
+from encounter_tab import EncounterTab
 from print_encounter import print_encounter
 import extract
 
