@@ -401,8 +401,11 @@ class AdversaryTable(QWidget):
         self._search = QLineEdit()
         self._search.setPlaceholderText('Search (regex)…')
         self._search.textChanged.connect(self._on_search)
-        self._search.setContentsMargins(4, 4, 4, 4)
-        root.addWidget(self._search)
+        search_wrap = QWidget()
+        sl = QHBoxLayout(search_wrap)
+        sl.setContentsMargins(4, 4, 4, 4)
+        sl.addWidget(self._search)
+        root.addWidget(search_wrap)
 
         # Sort header
         hdr_widget = QWidget()
