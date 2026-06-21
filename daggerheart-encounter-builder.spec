@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for Daggerheart Encounter Builder
+import sys
 
 a = Analysis(
     ['main.py'],
@@ -21,6 +21,8 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+_icon = 'assets/icons/DH_CGL_logo.png'
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -32,7 +34,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    icon='assets/icons/DH_CGL_logo.png',
+    icon=_icon,
 )
 
 coll = COLLECT(
@@ -44,3 +46,15 @@ coll = COLLECT(
     upx_exclude=[],
     name='DaggerheartEncounterBuilder',
 )
+
+if sys.platform == 'darwin':
+    app = BUNDLE(
+        coll,
+        name='DaggerheartEncounterBuilder.app',
+        icon=_icon,
+        bundle_identifier='org.sublevel3.daggerheart.encounter-builder',
+        info_plist={
+            'NSHighResolutionCapable': True,
+            'NSPrincipalClass': 'NSApplication',
+        },
+    )

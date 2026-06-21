@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from adversary import AdversaryFormDialog
+from version import __version__
 from adversary_table import AdversaryPanel
 from encounter_tab import EncounterTab
 from icons import file_plus_icon, play_icon, printer_icon, save_icon, stop_icon
@@ -165,7 +166,7 @@ class _SourceSelectDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Daggerheart Encounter Builder')
+        self.setWindowTitle(f'Daggerheart Encounter Builder {__version__}')
         self.setWindowIcon(QIcon(str(_resource_path('assets/icons/DH_CGL_logo.png'))))
         self.resize(1400, 800)
 
@@ -764,7 +765,8 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == '__main__':
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('sublevel3.daggerheart.encounter-builder')
+    if sys.platform == 'win32':
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('sublevel3.daggerheart.encounter-builder')
     app = QApplication(sys.argv)
     win = MainWindow()
     win.show()

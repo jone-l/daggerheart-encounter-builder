@@ -1,0 +1,80 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Build
+        run: python -m PyInstaller daggerheart-encounter-builder.spec --noconfirm
+
+      - name: Zip
+        run: Compress-Archive -Path dist\DaggerheartEncounterBuilder -DestinationPath DaggerheartEncounterBuilder-windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: DaggerheartEncounterBuilder-windows.zip
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Build
+        run: python -m PyInstaller daggerheart-encounter-builder.spec --noconfirm
+
+      - name: Zip
+        run: cd dist && zip -r ../DaggerheartEncounterBuilder-macos.zip DaggerheartEncounterBuilder.app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: DaggerheartEncounterBuilder-macos.zip
+
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PRERELEASE=""
+          if [[ "${{ github.ref_name }}" == *-alpha* ]] || [[ "${{ github.ref_name }}" == *-beta* ]]; then
+            PRERELEASE="--prerelease"
+          fi
+          gh release create "${{ github.ref_name }}" \
+            "artifacts/windows/DaggerheartEncounterBuilder-windows.zip" \
+            "artifacts/macos/DaggerheartEncounterBuilder-macos.zip" \
+            --title "Daggerheart Encounter Builder ${{ github.ref_name }}" \
+            --generate-notes \
+            $PRERELEASE
