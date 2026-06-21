@@ -2,6 +2,7 @@
 """print_encounter.py — Daggerheart Encounter Builder — A4 two-column print renderer."""
 
 from PySide6.QtCore import QMarginsF, QPointF, QRectF, Qt
+from window_state import load_window_size, save_window_size
 from PySide6.QtGui import (
     QColor, QFont, QFontMetricsF, QPainter, QPageLayout, QPageSize, QPen,
 )
@@ -448,5 +449,9 @@ def print_encounter(state: dict, parent: QWidget = None) -> None:
             painter.end()
 
     dlg = QPrintPreviewDialog(printer, parent)
+    size = load_window_size('print_preview')
+    if size:
+        dlg.resize(size[0], size[1])
     dlg.paintRequested.connect(_do_render)
     dlg.exec()
+    save_window_size('print_preview', dlg.width(), dlg.height())

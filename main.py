@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 from adversary import AdversaryFormDialog
 from adversary_table import AdversaryPanel
 from encounter_tab import EncounterTab
-from icons import file_plus_icon, printer_icon, save_icon
+from icons import file_plus_icon, play_icon, printer_icon, save_icon, stop_icon
 from print_encounter import print_encounter
 import extract
 
@@ -175,6 +175,7 @@ class MainWindow(QMainWindow):
         self._last_save_dir  = ''
         self._last_load_dir  = ''
         self._recent_files: list[str] = []
+        self._pre_run_sizes: list | None = None
 
         # Adversary panel (filter + table) — always visible on the left
         self._adv_panel = AdversaryPanel(self._merged_adversaries())
@@ -194,6 +195,7 @@ class MainWindow(QMainWindow):
         self._tabs.tabCloseRequested.connect(self._close_tab)
         self._tabs.currentChanged.connect(self._update_save_actions)
         self._tabs.currentChanged.connect(self._update_list_encounter_state)
+        self._tabs.currentChanged.connect(lambda _: self._update_left_panel())
 
         # Outer splitter
         self._outer = QSplitter(Qt.Orientation.Horizontal)
@@ -231,6 +233,17 @@ class MainWindow(QMainWindow):
         self._print_action.triggered.connect(self._print_encounter)
         file_menu.addAction(self._print_action)
 
+        self._run_action = QAction(play_icon(), 'Run Encounter', self)
+        self._run_action.setShortcut('Ctrl+R')
+        self._run_action.setEnabled(False)
+        self._run_action.triggered.connect(self._run_encounter)
+        file_menu.addAction(self._run_action)
+
+        self._stop_action = QAction(stop_icon(), 'Stop Encounter', self)
+        self._stop_action.setEnabled(False)
+        self._stop_action.triggered.connect(self._stop_encounter)
+        file_menu.addAction(self._stop_action)
+
         load_act = QAction('Load Encounter…', self)
         load_act.triggered.connect(self._load_encounter_file)
         file_menu.addAction(load_act)
@@ -255,6 +268,8 @@ class MainWindow(QMainWindow):
         file_tb.addAction(new_act)
         file_tb.addAction(self._save_action)
         file_tb.addAction(self._print_action)
+        file_tb.addAction(self._run_action)
+        file_tb.addAction(self._stop_action)
 
         # ── Status bar ──
         self._status_label = QLabel()
@@ -272,6 +287,14 @@ class MainWindow(QMainWindow):
         w = self._tabs.currentWidget()
         return w if isinstance(w, EncounterTab) else None
 
+    def _find_tab_by_path(self, path: str) -> int | None:
+        resolved = str(Path(path).resolve())
+        for i in range(self._tabs.count()):
+            w = self._tabs.widget(i)
+            if isinstance(w, EncounterTab) and str(Path(w.save_path).resolve()) == resolved:
+                return i
+        return None
+
     def _new_encounter(self) -> None:
         tab = EncounterTab()
         tab.title_changed.connect(lambda title, t=tab: self._update_tab_title(t, title))
@@ -284,6 +307,8 @@ class MainWindow(QMainWindow):
 
     def _close_tab(self, idx: int) -> None:
         w = self._tabs.widget(idx)
+        if isinstance(w, EncounterTab) and w.is_running:
+            w.stop_run()
         if isinstance(w, EncounterTab) and w.dirty:
             msg = QMessageBox(self)
             msg.setWindowTitle('Unsaved Changes')
@@ -309,6 +334,18 @@ class MainWindow(QMainWindow):
         w.deleteLater()
         if self._tabs.count() == 0:
             self._show_right_pane(False)
+
+    def _update_left_panel(self) -> None:
+        tab     = self._current_tab()
+        running = tab is not None and tab.is_running
+        if running and self._adv_panel.isVisible():
+            self._pre_run_sizes = self._outer.sizes()
+            self._adv_panel.setVisible(False)
+        elif not running and not self._adv_panel.isVisible():
+            self._adv_panel.setVisible(True)
+            if self._pre_run_sizes:
+                self._outer.setSizes(self._pre_run_sizes)
+                self._pre_run_sizes = None
 
     def _show_right_pane(self, visible: bool) -> None:
         self._tabs.setVisible(visible)
@@ -373,7 +410,7 @@ class MainWindow(QMainWindow):
         if getattr(self, '_loading_state', False):
             return
         tiers, roles, sources = self._adv_panel.filter_panel.get_filters()
-        state = {
+        updates = {
             'filters': {
                 'tiers':   sorted(tiers),
                 'roles':   sorted(roles),
@@ -385,8 +422,13 @@ class MainWindow(QMainWindow):
             'window':        {'width': self.width(), 'height': self.height()},
         }
         try:
+            existing = json.loads(STATE_FILE.read_text(encoding='utf-8')) if STATE_FILE.exists() else {}
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+        existing.update(updates)
+        try:
             STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            STATE_FILE.write_text(json.dumps(state, indent=2), encoding='utf-8')
+            STATE_FILE.write_text(json.dumps(existing, indent=2), encoding='utf-8')
         except OSError:
             pass
 
@@ -437,6 +479,10 @@ class MainWindow(QMainWindow):
             self._recent_menu.addAction(act)
 
     def _open_recent(self, path: str) -> None:
+        existing = self._find_tab_by_path(path)
+        if existing is not None:
+            self._tabs.setCurrentIndex(existing)
+            return
         p = Path(path)
         if not p.exists():
             QMessageBox.critical(self, 'File Not Found', f'"{p.name}" no longer exists.')
@@ -459,10 +505,36 @@ class MainWindow(QMainWindow):
         self._save_state()
 
     def _update_save_actions(self) -> None:
+        tab     = self._current_tab()
+        running = tab is not None and tab.is_running
+        self._save_action.setEnabled(bool(tab and tab.save_path and tab.dirty and not running))
+        self._save_as_action.setEnabled(tab is not None and not running)
+        self._print_action.setEnabled(tab is not None and not running)
+        self._run_action.setEnabled(
+            bool(tab and tab.save_path and not tab.dirty and not running))
+        self._stop_action.setEnabled(running)
+
+    def _run_encounter(self) -> None:
         tab = self._current_tab()
-        self._save_action.setEnabled(bool(tab and tab.save_path and tab.dirty))
-        self._save_as_action.setEnabled(tab is not None)
-        self._print_action.setEnabled(tab is not None)
+        if not tab:
+            return
+        if not tab.save_path or tab.dirty:
+            QMessageBox.information(
+                self, 'Save Required',
+                'Please save the encounter before running it.\n\n'
+                'Save with Ctrl+S or File → Save As… first.'
+            )
+            return
+        tab.start_run()
+        self._update_save_actions()
+        self._update_left_panel()
+
+    def _stop_encounter(self) -> None:
+        tab = self._current_tab()
+        if tab and tab.is_running:
+            tab.stop_run()
+            self._update_save_actions()
+            self._update_left_panel()
 
     # ── Source import ─────────────────────────────────────────────────────────
 
@@ -632,18 +704,23 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self, 'Load Encounter', self._last_load_dir, 'JSON files (*.json)'
         )
-        if path:
-            try:
-                data = json.loads(Path(path).read_text(encoding='utf-8'))
-                self._last_load_dir = str(Path(path).parent)
-                self._new_encounter()
-                tab = self._current_tab()
-                tab.load_encounter_state(data)
-                tab.mark_saved(path)
-                self._add_recent(path)
-                self._save_state()
-            except (OSError, json.JSONDecodeError):
-                pass
+        if not path:
+            return
+        existing = self._find_tab_by_path(path)
+        if existing is not None:
+            self._tabs.setCurrentIndex(existing)
+            return
+        try:
+            data = json.loads(Path(path).read_text(encoding='utf-8'))
+            self._last_load_dir = str(Path(path).parent)
+            self._new_encounter()
+            tab = self._current_tab()
+            tab.load_encounter_state(data)
+            tab.mark_saved(path)
+            self._add_recent(path)
+            self._save_state()
+        except (OSError, json.JSONDecodeError):
+            pass
 
     # ── Close ─────────────────────────────────────────────────────────────────
 

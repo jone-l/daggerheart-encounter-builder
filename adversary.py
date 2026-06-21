@@ -4,6 +4,7 @@
 import html
 
 from PySide6.QtCore import Qt, Signal
+from window_state import load_window_size, save_window_size
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFrame, QGridLayout, QHBoxLayout,
@@ -624,6 +625,11 @@ class AdversaryFormDialog(QDialog):
         self.form_panel.update_in_encounter.connect(self._on_update)
         self.form_panel.save_to_custom.connect(self.save_to_custom)
         self.form_panel.save_as_new_custom.connect(self.save_as_new_custom)
+
+        size = load_window_size('adversary_form')
+        if size:
+            self.resize(size[0], size[1])
+        self.finished.connect(lambda: save_window_size('adversary_form', self.width(), self.height()))
 
     def load(self, adv: dict) -> None:
         self.form_panel.load(adv)

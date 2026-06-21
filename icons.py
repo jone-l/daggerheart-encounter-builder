@@ -28,6 +28,9 @@ _P_PRINTER = (
     '<path d="M6 9V3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v6"/>'
     '<rect x="6" y="14" width="12" height="8" rx="1"/>'
 )
+_P_PLAY = '<path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/>'
+_P_STOP = '<rect x="5" y="5" width="14" height="14" rx="2"/>'
+
 _P_FILE_PLUS = (
     '<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706'
     'l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/>'
@@ -82,3 +85,20 @@ def printer_icon(size: int = 20, stroke_width: float = 2)-> QIcon:
 
 def file_plus_icon(size: int = 20, stroke_width: float = 2) -> QIcon:
     return _icon(_P_FILE_PLUS,        size, stroke_width)
+
+def play_icon(size: int = 20, stroke_width: float = 2) -> QIcon:
+    return _icon(_P_PLAY,             size, stroke_width)
+
+def stop_icon(size: int = 20, color: str = _COLOR) -> QIcon:
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
+        f' fill="{color}" stroke="none">'
+        f'{_P_STOP}</svg>'
+    ).encode()
+    renderer = QSvgRenderer(QByteArray(svg))
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    renderer.render(painter)
+    painter.end()
+    return QIcon(pm)
